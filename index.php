@@ -183,7 +183,7 @@ if ( empty($page['is_external']) )
 
     $my_search = get_search_array($page['search']);
 
-    $search_forbidden = get_sql_condition_FandF(
+    $page['search_details']['forbidden'] = get_sql_condition_FandF(
       array(
         'forbidden_categories' => 'category_id',
         'visible_categories' => 'category_id',
@@ -215,16 +215,14 @@ if ( empty($page['is_external']) )
       // TODO calling get_available_tags(), with lots of photos/albums/tags may cost time,
       // we should reuse the result if already executed (for building the menu for example)
 
-      $other_filters = array_diff(array_keys($page['search_details']['image_ids_for_filter']), array('tags'));
-      if (count($other_filters) > 0)
+      $other_filters_items = get_items_for_filter('tags');
+      if (false === $other_filters_items)
       {
-        $other_filters_items = $page['search_details']['image_ids_for_filter'][array_shift($other_filters)];
-        foreach ($other_filters as $other_filter)
-        {
-          $other_filters_items = array_intersect($other_filters_items, $page['search_details']['image_ids_for_filter'][$other_filter]);
-        }
-        $other_filters_items = array_unique($other_filters_items);
-
+        $filter_tags = get_available_tags();
+        usort($filter_tags, 'tag_alpha_compare');
+      }
+      else
+      {
         $filter_tags = get_common_tags($other_filters_items, 0);
 
         // the user may have started a search on 2 or more tags that have no
@@ -238,11 +236,6 @@ if ( empty($page['is_external']) )
           $filter_tags = array_merge(get_available_tags($missing_tag_ids), $filter_tags);
         }
       }
-      else
-      {
-        $filter_tags = get_available_tags();
-        usort($filter_tags, 'tag_alpha_compare');
-      }
 
       $template->assign('TAGS', $filter_tags);
 
@@ -254,22 +247,7 @@ if ( empty($page['is_external']) )
 
     if (isset($my_search['fields']['author']))
     {
-      $other_filters = array_diff(array_keys($page['search_details']['image_ids_for_filter']), array('author'));
-      if (count($other_filters) > 0)
-      {
-        $other_filters_items = $page['search_details']['image_ids_for_filter'][array_shift($other_filters)];
-        foreach ($other_filters as $other_filter)
-        {
-          $other_filters_items = array_intersect($other_filters_items, $page['search_details']['image_ids_for_filter'][$other_filter]);
-        }
-        $other_filters_items = array_unique($other_filters_items);
-
-        $filter_clause = 'image_id IN ('.implode(',', $other_filters_items).')';
-      }
-      else
-      {
-        $filter_clause = '1=1'.$search_forbidden;
-      }
+      $filter_clause = get_clause_for_filter('author');
 
       $query = '
 SELECT
@@ -295,22 +273,7 @@ SELECT
 
     if (isset($my_search['fields']['date_posted']))
     {
-      $other_filters = array_diff(array_keys($page['search_details']['image_ids_for_filter']), array('date_posted'));
-      if (count($other_filters) > 0)
-      {
-        $other_filters_items = $page['search_details']['image_ids_for_filter'][array_shift($other_filters)];
-        foreach ($other_filters as $other_filter)
-        {
-          $other_filters_items = array_intersect($other_filters_items, $page['search_details']['image_ids_for_filter'][$other_filter]);
-        }
-        $other_filters_items = array_unique($other_filters_items);
-
-        $filter_clause = 'image_id IN ('.implode(',', $other_filters_items).')';
-      }
-      else
-      {
-        $filter_clause = '1=1'.$search_forbidden;
-      }
+      $filter_clause = get_clause_for_filter('date_posted');
 
       $query = '
 SELECT
@@ -390,22 +353,7 @@ SELECT
 
     if (isset($my_search['fields']['added_by']))
     {
-      $other_filters = array_diff(array_keys($page['search_details']['image_ids_for_filter']), array('added_by'));
-      if (count($other_filters) > 0)
-      {
-        $other_filters_items = $page['search_details']['image_ids_for_filter'][array_shift($other_filters)];
-        foreach ($other_filters as $other_filter)
-        {
-          $other_filters_items = array_intersect($other_filters_items, $page['search_details']['image_ids_for_filter'][$other_filter]);
-        }
-        $other_filters_items = array_unique($other_filters_items);
-
-        $filter_clause = 'image_id IN ('.implode(',', $other_filters_items).')';
-      }
-      else
-      {
-        $filter_clause = '1=1'.$search_forbidden;
-      }
+      $filter_clause = get_clause_for_filter('added_by');
 
       $query = '
 SELECT
@@ -483,24 +431,29 @@ SELECT
 
     if (isset($my_search['fields']['filetypes']))
     {
-      $other_filters = array_diff(array_keys($page['search_details']['image_ids_for_filter']), array('filetypes'));
-      if (count($other_filters) > 0)
-      {
-        $other_filters_items = $page['search_details']['image_ids_for_filter'][array_shift($other_filters)];
-        foreach ($other_filters as $other_filter)
-        {
-          $other_filters_items = array_intersect($other_filters_items, $page['search_details']['image_ids_for_filter'][$other_filter]);
-        }
-        $other_filters_items = array_unique($other_filters_items);
+      $filter_clause = get_clause_for_filter('filetypes');
 
-        $filter_clause = 'image_id IN ('.implode(',', $other_filters_items).')';
-      }
-      else
+      // get all file extensions for this user in the gallery, whatever the current filters
+      $cache_key = $persistent_cache->make_key('file_exts'.$user['id'].$user['cache_update_time']);
+      if (!$persistent_cache->get($cache_key, $all_exts))
       {
-        $filter_clause = '1=1'.$search_forbidden;
+        $query = '
+SELECT
+    SUBSTRING_INDEX(path, ".", -1) AS ext,
+    COUNT(DISTINCT(id)) AS counter
+  FROM '.IMAGES_TABLE.' AS i
+    JOIN '.IMAGE_CATEGORY_TABLE.' AS ic ON ic.image_id = i.id
+  WHERE 1=1'.$page['search_details']['forbidden'].'
+  GROUP BY ext
+  ORDER BY counter DESC
+;';
+        $all_exts = query2array($query, 'ext', 'counter');
+        $persistent_cache->set($cache_key, $all_exts);
       }
 
-      $query = '
+      if (preg_match('/^image_id IN/', $filter_clause))
+      {
+        $query = '
 SELECT
     SUBSTRING_INDEX(path, ".", -1) AS ext,
     COUNT(DISTINCT(id)) AS counter
@@ -510,28 +463,26 @@ SELECT
   GROUP BY ext
   ORDER BY counter DESC
 ;';
-      $template->assign('FILETYPES', query2array($query, 'ext', 'counter'));
+        $filtered_exts = query2array($query, 'ext', 'counter');
+
+        $exts = array();
+        foreach ($all_exts as $ext => $counter)
+        {
+          $exts[$ext] = $filtered_exts[$ext] ?? 0;
+        }
+
+        $template->assign('FILETYPES', $exts);
+      }
+      else
+      {
+        $template->assign('FILETYPES', $all_exts);
+      }
     }
 
     // For rating
     if (isset($my_search['fields']['ratings']))
     {
-      $other_filters = array_diff(array_keys($page['search_details']['image_ids_for_filter']), array('ratings'));
-      if (count($other_filters) > 0)
-      {
-        $other_filters_items = $page['search_details']['image_ids_for_filter'][array_shift($other_filters)];
-        foreach ($other_filters as $other_filter)
-        {
-          $other_filters_items = array_intersect($other_filters_items, $page['search_details']['image_ids_for_filter'][$other_filter]);
-        }
-        $other_filters_items = array_unique($other_filters_items);
-
-        $filter_clause = 'image_id IN ('.implode(',', $other_filters_items).')';
-      }
-      else
-      {
-        $filter_clause = '1=1'.$search_forbidden;
-      }
+      $filter_clause = get_clause_for_filter('ratings');
 
       $ratings = array_fill(0, 6, 0);
 
@@ -573,22 +524,7 @@ SELECT
     // For filesize
     if (isset($my_search['fields']['filesize_min']) && isset($my_search['fields']['filesize_max']))
     {
-      $other_filters = array_diff(array_keys($page['search_details']['image_ids_for_filter']), array('filesize'));
-      if (count($other_filters) > 0)
-      {
-        $other_filters_items = $page['search_details']['image_ids_for_filter'][array_shift($other_filters)];
-        foreach ($other_filters as $other_filter)
-        {
-          $other_filters_items = array_intersect($other_filters_items, $page['search_details']['image_ids_for_filter'][$other_filter]);
-        }
-        $other_filters_items = array_unique($other_filters_items);
-
-        $filter_clause = 'image_id IN ('.implode(',', $other_filters_items).')';
-      }
-      else
-      {
-        $filter_clause = '1=1'.$search_forbidden;
-      }
+      $filter_clause = get_clause_for_filter('filesize');
 
       $filesizes = array();
       $filesize = array();
@@ -635,22 +571,7 @@ SELECT
     
     if (isset($my_search['fields']['ratios']))
     {
-      $other_filters = array_diff(array_keys($page['search_details']['image_ids_for_filter']), array('ratios'));
-      if (count($other_filters) > 0)
-      {
-        $other_filters_items = $page['search_details']['image_ids_for_filter'][array_shift($other_filters)];
-        foreach ($other_filters as $other_filter)
-        {
-          $other_filters_items = array_intersect($other_filters_items, $page['search_details']['image_ids_for_filter'][$other_filter]);
-        }
-        $other_filters_items = array_unique($other_filters_items);
-
-        $filter_clause = 'image_id IN ('.implode(',', $other_filters_items).')';
-      }
-      else
-      {
-        $filter_clause = '1=1'.$search_forbidden;
-      }
+      $filter_clause = get_clause_for_filter('ratios');
 
       $query = '
 SELECT
@@ -696,22 +617,7 @@ SELECT
 
     if (isset($my_search['fields']['height_min']) and isset($my_search['fields']['height_max']))
     {
-      $other_filters = array_diff(array_keys($page['search_details']['image_ids_for_filter']), array('height'));
-      if (count($other_filters) > 0)
-      {
-        $other_filters_items = $page['search_details']['image_ids_for_filter'][array_shift($other_filters)];
-        foreach ($other_filters as $other_filter)
-        {
-          $other_filters_items = array_intersect($other_filters_items, $page['search_details']['image_ids_for_filter'][$other_filter]);
-        }
-        $other_filters_items = array_unique($other_filters_items);
-
-        $filter_clause = 'image_id IN ('.implode(',', $other_filters_items).')';
-      }
-      else
-      {
-        $filter_clause = '1=1'.$search_forbidden;
-      }
+      $filter_clause = get_clause_for_filter('height');
 
       $query = '
 SELECT
@@ -742,22 +648,7 @@ SELECT
 
     if (isset($my_search['fields']['width_min']) and isset($my_search['fields']['width_max']))
     {
-      $other_filters = array_diff(array_keys($page['search_details']['image_ids_for_filter']), array('width'));
-      if (count($other_filters) > 0)
-      {
-        $other_filters_items = $page['search_details']['image_ids_for_filter'][array_shift($other_filters)];
-        foreach ($other_filters as $other_filter)
-        {
-          $other_filters_items = array_intersect($other_filters_items, $page['search_details']['image_ids_for_filter'][$other_filter]);
-        }
-        $other_filters_items = array_unique($other_filters_items);
-
-        $filter_clause = 'image_id IN ('.implode(',', $other_filters_items).')';
-      }
-      else
-      {
-        $filter_clause = '1=1'.$search_forbidden;
-      }
+      $filter_clause = get_clause_for_filter('width');
 
       $query = '
 SELECT
